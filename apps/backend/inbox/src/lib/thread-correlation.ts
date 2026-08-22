@@ -19,6 +19,24 @@ function bareEmail(value: string): string {
 	return (match?.[1] ?? value).trim().toLowerCase();
 }
 
+async function findOrgThreadIdByRfc822MessageId(
+	rfc822MessageId: string,
+	organizationId: string,
+): Promise<string | null> {
+	const rows = await db
+		.select({ threadId: threadMessage.threadId })
+		.from(threadMessage)
+		.innerJoin(emailThread, eq(threadMessage.threadId, emailThread.id))
+		.where(
+			and(
+				eq(threadMessage.rfc822MessageId, rfc822MessageId),
+				eq(emailThread.organizationId, organizationId),
+			),
+		)
+		.limit(1);
+	return rows[0]?.threadId ?? null;
+}
+
 function uniqueParticipants(...groups: Array<string[] | null | undefined>) {
 	const seen = new Set<string>();
 	const out: string[] = [];
@@ -73,14 +91,13 @@ export async function correlateInboundThread({
 	// ─── Try to find an existing thread ──────────────────────────────
 	let existingThreadId: string | null = null;
 
-	// Strategy 1: Check In-Reply-To header
+	// Strategy 1: Check In-Reply-To header (same organization only)
 	if (inReplyTo) {
-		const match = await db.query.threadMessage.findFirst({
-			where: eq(threadMessage.rfc822MessageId, inReplyTo),
-			columns: { threadId: true },
-		});
-		if (match) {
-			existingThreadId = match.threadId;
+		existingThreadId = await findOrgThreadIdByRfc822MessageId(
+			inReplyTo,
+			organizationId,
+		);
+		if (existingThreadId) {
 			log.info(`[THREAD] Matched thread via In-Reply-To: ${existingThreadId}`);
 		}
 	}
@@ -88,12 +105,11 @@ export async function correlateInboundThread({
 	// Strategy 2: Check References header (walk backwards, most recent first)
 	if (!existingThreadId && references.length > 0) {
 		for (const ref of [...references].reverse()) {
-			const match = await db.query.threadMessage.findFirst({
-				where: eq(threadMessage.rfc822MessageId, ref),
-				columns: { threadId: true },
-			});
-			if (match) {
-				existingThreadId = match.threadId;
+			existingThreadId = await findOrgThreadIdByRfc822MessageId(
+				ref,
+				organizationId,
+			);
+			if (existingThreadId) {
 				log.info(`[THREAD] Matched thread via References: ${existingThreadId}`);
 				break;
 			}
@@ -132,7 +148,12 @@ export async function correlateInboundThread({
 					END
 				`,
 			})
-			.where(eq(emailThread.id, existingThreadId));
+			.where(
+				and(
+					eq(emailThread.id, existingThreadId),
+					eq(emailThread.organizationId, organizationId),
+				),
+			);
 
 		log.info(`[THREAD] Appended inbound message to thread ${existingThreadId}`);
 		return { threadId: existingThreadId, isNew: false };
