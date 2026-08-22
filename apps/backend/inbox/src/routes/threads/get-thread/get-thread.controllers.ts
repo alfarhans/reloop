@@ -31,11 +31,10 @@ function uniqueAddresses(
 	return out;
 }
 
-export async function getThreadController(id: string, organizationId: string) {
-	// 1. Try finding directly by emailThread.id
-	let thread = await db.query.emailThread.findFirst({
+async function loadOrgThread(threadId: string, organizationId: string) {
+	return db.query.emailThread.findFirst({
 		where: and(
-			eq(emailThread.id, id),
+			eq(emailThread.id, threadId),
 			eq(emailThread.organizationId, organizationId),
 		),
 		with: {
@@ -44,25 +43,28 @@ export async function getThreadController(id: string, organizationId: string) {
 			},
 		},
 	});
+}
 
-	// 2. If not found by emailThread.id, check if id is an inboundEmail.id with a threadId column
+export async function getThreadController(id: string, organizationId: string) {
+	// 1. Try finding directly by emailThread.id
+	let thread = await loadOrgThread(id, organizationId);
+
+	// 2. If not found by emailThread.id, check if id is an inboundEmail.id
+	//    in this organization, then load that thread (also org-scoped).
 	if (!thread) {
 		const inb = await db.query.inboundEmail.findFirst({
-			where: eq(inboundEmail.id, id),
+			where: and(
+				eq(inboundEmail.id, id),
+				eq(inboundEmail.organizationId, organizationId),
+			),
 		});
 		if (inb?.threadId) {
-			thread = await db.query.emailThread.findFirst({
-				where: eq(emailThread.id, inb.threadId),
-				with: {
-					messages: {
-						orderBy: [desc(threadMessage.messageAt)],
-					},
-				},
-			});
+			thread = await loadOrgThread(inb.threadId, organizationId);
 		}
 	}
 
-	// 3. Check threadMessage table by inboundEmailId, emailLogId, or message ID
+	// 3. Check threadMessage table by inboundEmailId, emailLogId, or message ID.
+	//    The thread itself must belong to the caller organization.
 	if (!thread) {
 		const tm = await db.query.threadMessage.findFirst({
 			where: or(
@@ -73,14 +75,7 @@ export async function getThreadController(id: string, organizationId: string) {
 		});
 
 		if (tm?.threadId) {
-			thread = await db.query.emailThread.findFirst({
-				where: eq(emailThread.id, tm.threadId),
-				with: {
-					messages: {
-						orderBy: [desc(threadMessage.messageAt)],
-					},
-				},
-			});
+			thread = await loadOrgThread(tm.threadId, organizationId);
 		}
 	}
 
@@ -90,7 +85,10 @@ export async function getThreadController(id: string, organizationId: string) {
 			thread.messages.map(async (msg) => {
 				if (msg.direction === "inbound" && msg.inboundEmailId) {
 					const email = await db.query.inboundEmail.findFirst({
-						where: eq(inboundEmail.id, msg.inboundEmailId),
+						where: and(
+							eq(inboundEmail.id, msg.inboundEmailId),
+							eq(inboundEmail.organizationId, organizationId),
+						),
 						with: { attachments: true },
 					});
 					return {
@@ -117,7 +115,10 @@ export async function getThreadController(id: string, organizationId: string) {
 
 				if (msg.direction === "outbound" && msg.emailLogId) {
 					const email = await db.query.emailLog.findFirst({
-						where: eq(emailLog.id, msg.emailLogId),
+						where: and(
+							eq(emailLog.id, msg.emailLogId),
+							eq(emailLog.organizationId, organizationId),
+						),
 					});
 					return {
 						...msg,
