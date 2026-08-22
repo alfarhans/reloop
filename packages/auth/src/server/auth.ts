@@ -22,6 +22,10 @@ import {
 	organizationNameMaxLengthMessage,
 	organizationNameTooLong,
 } from "../organization-limits";
+import {
+	isOrganizationMember,
+	resolveTrustedOrganizationId,
+} from "../organization-membership";
 import { ac, orgRoles } from "../permissions";
 import { platformAc, platformRoles } from "../platform-permissions";
 import { DEFAULT_USER_ROLE, PLATFORM_ADMIN_ROLE } from "../roles";
@@ -74,7 +78,8 @@ export const auth = betterAuth({
 			activeOrganizationId: {
 				type: "string",
 				required: false,
-				input: true,
+				// Server-only: clients must not set this (tenant isolation).
+				input: false,
 			},
 			mode: {
 				type: "string",
@@ -131,8 +136,6 @@ export const auth = betterAuth({
 		session: {
 			create: {
 				before: async (session) => {
-					if (session.activeOrganizationId) return;
-
 					const [found] = await db
 						.select({
 							activeOrganizationId: schema.user.activeOrganizationId,
@@ -141,12 +144,22 @@ export const auth = betterAuth({
 						.where(eq(schema.user.id, session.userId))
 						.limit(1);
 
-					if (!found?.activeOrganizationId) return;
+					const trustedOrganizationId = await resolveTrustedOrganizationId({
+						userId: session.userId,
+						sessionOrganizationId: session.activeOrganizationId,
+						userOrganizationId: found?.activeOrganizationId,
+					});
+
+					if (
+						trustedOrganizationId === (session.activeOrganizationId ?? null)
+					) {
+						return;
+					}
 
 					return {
 						data: {
 							...session,
-							activeOrganizationId: found.activeOrganizationId,
+							activeOrganizationId: trustedOrganizationId,
 						},
 					};
 				},
@@ -186,6 +199,26 @@ export const auth = betterAuth({
 					...{ data: err },
 					message: "Session cache eviction failed",
 				});
+			}
+
+			if (
+				path === "/organization/set-active" ||
+				path === "/organization/set-active/"
+			) {
+				const body = ctx.body as { organizationId?: string } | undefined;
+				const organizationId = body?.organizationId;
+				const userId =
+					context?.session?.user?.id ?? context?.newSession?.user?.id;
+				if (
+					userId &&
+					organizationId &&
+					(await isOrganizationMember(userId, organizationId))
+				) {
+					await db
+						.update(schema.user)
+						.set({ activeOrganizationId: organizationId })
+						.where(eq(schema.user.id, userId));
+				}
 			}
 
 			if (
