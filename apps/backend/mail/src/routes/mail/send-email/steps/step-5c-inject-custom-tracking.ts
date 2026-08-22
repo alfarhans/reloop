@@ -77,34 +77,18 @@ function rewriteLinks(
 				if (decoded?.url) {
 					cleanUrl = decoded.url;
 				} else {
-					// Fallback: decode without signature verification
-					try {
-						const json = Buffer.from(existingToken, "base64url").toString(
-							"utf-8",
-						);
-						const obj = JSON.parse(json) as { url?: string };
-						if (obj.url) {
-							cleanUrl = obj.url;
-						} else {
-							return match;
-						}
-					} catch {
-						return match;
-					}
+					return match;
 				}
 			}
 
-			let token: string;
-			if (clickTracking) {
-				token = encodeTrackingToken(
-					{ id: emailLogId, url: cleanUrl },
-					mailConfig.TRACKING_SECRET,
-				);
-			} else {
-				token = Buffer.from(JSON.stringify({ url: cleanUrl })).toString(
-					"base64url",
-				);
+			if (!clickTracking) {
+				return `${prefix}${quote}${cleanUrl}${quote}`;
 			}
+
+			const token = encodeTrackingToken(
+				{ id: emailLogId, url: cleanUrl },
+				mailConfig.TRACKING_SECRET,
+			);
 			const trackingUrl = `${baseUrl}/redirect/${token}`;
 
 			return `${prefix}${quote}${trackingUrl}${quote}`;
