@@ -1,5 +1,10 @@
 import { db } from "@reloop/db/client";
-import { emailThread, inboundAttachment } from "@reloop/db/schema";
+import {
+	emailThread,
+	inboundAttachment,
+	inboundEmail,
+	threadMessage,
+} from "@reloop/db/schema";
 import { and, eq } from "drizzle-orm";
 import { createError } from "evlog";
 
@@ -25,7 +30,6 @@ export async function getThreadAttachmentController(
 		});
 	}
 
-	// Find the attachment
 	const attachment = await db.query.inboundAttachment.findFirst({
 		where: eq(inboundAttachment.id, attachmentId),
 	});
@@ -36,6 +40,33 @@ export async function getThreadAttachmentController(
 			message: "Attachment not found",
 			why: `Attachment ${attachmentId} was not found`,
 			fix: "Verify the attachment ID",
+		});
+	}
+
+	const email = await db.query.inboundEmail.findFirst({
+		where: and(
+			eq(inboundEmail.id, attachment.inboundEmailId),
+			eq(inboundEmail.organizationId, organizationId),
+		),
+		columns: { id: true },
+	});
+
+	const onThread = email
+		? await db.query.threadMessage.findFirst({
+				where: and(
+					eq(threadMessage.threadId, threadId),
+					eq(threadMessage.inboundEmailId, email.id),
+				),
+				columns: { id: true },
+			})
+		: null;
+
+	if (!email || !onThread) {
+		throw createError({
+			status: 404,
+			message: "Attachment not found",
+			why: `Attachment ${attachmentId} was not found on this thread`,
+			fix: "Verify the attachment ID and thread ID",
 		});
 	}
 
