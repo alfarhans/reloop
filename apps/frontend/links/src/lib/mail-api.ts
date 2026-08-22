@@ -38,26 +38,16 @@ export function getMailTrackOpenUrl(token: string): string {
 	return `${getMailApiBaseUrl()}/v1/track/open/${encodeURIComponent(token)}`;
 }
 
-/** Best-effort destination from a tracking token when the mail API is down. */
-export function decodeDestinationFromToken(token: string): string | null {
-	try {
-		const json = Buffer.from(token, "base64url").toString("utf-8");
-		const payload = JSON.parse(json) as { url?: string };
-		return payload.url ?? null;
-	} catch {
-		return null;
-	}
-}
-
 /**
  * Record a click through this app's public Next API
  * (`NEXT_PUBLIC_URL/api/mail/v1/track/click/...`), which proxies to mail.
+ *
+ * Destination comes only from a verified mail-service Location. Unsigned
+ * token JSON is never trusted (open-redirect).
  */
 export async function resolveClickDestination(
 	token: string,
 ): Promise<string | null> {
-	let destination = decodeDestinationFromToken(token);
-
 	try {
 		const res = await fetch(getPublicTrackClickUrl(token), {
 			method: "GET",
@@ -72,13 +62,16 @@ export async function resolveClickDestination(
 		const isRedirect = res.status >= 300 && res.status < 400;
 		if (res.ok || isRedirect) {
 			const location = res.headers.get("location");
-			if (location) {
-				destination = location;
+			if (
+				location &&
+				(location.startsWith("http://") || location.startsWith("https://"))
+			) {
+				return location;
 			}
 		}
 	} catch {
-		// Fall through to token-decoded destination.
+		return null;
 	}
 
-	return destination;
+	return null;
 }
